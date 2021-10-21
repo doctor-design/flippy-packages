@@ -40,7 +40,7 @@ GETCPU_SCRIPT="${PWD}/files/getcpu"
 KMOD="${PWD}/files/kmod"
 KMOD_BLACKLIST="${PWD}/files/vplus/kmod_blacklist"
 
-FIRSTRUN_SCRIPT="${PWD}/files/mk_newpart.sh"
+FIRSTRUN_SCRIPT="${PWD}/files/first_run.sh"
 BOOT_CMD="${PWD}/files/vplus/boot/boot.cmd"
 BOOT_SCR="${PWD}/files/vplus/boot/boot.scr"
 
@@ -76,7 +76,7 @@ WRITE_UBOOT_SCRIPT="${PWD}/files/vplus/u-boot-v2021.04/update-u-boot.sh"
 
 # 20210307 add
 SS_LIB="${PWD}/files/ss-glibc/lib-glibc.tar.xz"
-SS_BIN="${PWD}/files/ss-glibc/ss-bin-glibc.tar.xz"
+SS_BIN="${PWD}/files/ss-glibc/armv8a_crypto/ss-bin-glibc.tar.xz"
 JQ="${PWD}/files/jq"
 
 # 20210330 add
@@ -114,8 +114,7 @@ btrfs subvolume create $TGT_ROOT/etc
 extract_rootfs_files
 extract_allwinner_boot_files
 
-echo "modify boot ... "
-# modify boot
+echo "修改引导分区相关配置 ... "
 cd $TGT_BOOT
 [ -f $BOOT_CMD ] && cp -v $BOOT_CMD boot.cmd
 [ -f $BOOT_SCR ] && cp -v $BOOT_SCR boot.scr
@@ -131,36 +130,16 @@ FDT=/dtb/allwinner/sun50i-h6-vplus-cloud.dtb
 
 APPEND=root=UUID=${ROOTFS_UUID} rootfstype=btrfs rootflags=compress=zstd console=ttyS0,115200n8 no_console_suspend consoleblank=0 fsck.fix=yes fsck.repair=yes net.ifnames=0 cgroup_enable=cpuset cgroup_memory=1 cgroup_enable=memory swapaccount=1
 EOF
-echo "uEnv.txt"
+echo "uEnv.txt -->"
 echo "======================================================================================"
 cat uEnv.txt
 echo "======================================================================================"
 echo
 
-echo "modify root ... "
-# modify root
+echo "修改根文件系统相关配置 ... "
+cd $TGT_ROOT
 copy_supplement_files
 extract_glibc_programs
-
-cd $TGT_ROOT
-if [ -f etc/config/cpufreq ];then
-    sed -e "s/ondemand/schedutil/" -i etc/config/cpufreq
-fi
-
-mv -f ./etc/modules.d/brcm* ./etc/modules.d.remove/ 2>/dev/null
-mod_blacklist=$(cat ${KMOD_BLACKLIST})
-for mod in $mod_blacklist ;do
-	mv -f ./etc/modules.d/${mod} ./etc/modules.d.remove/ 2>/dev/null
-done
-[ -f ./etc/modules.d/usb-net-asix-ax88179 ] || echo "ax88179_178a" > ./etc/modules.d/usb-net-asix-ax88179
-if echo $KERNEL_VERSION | grep -E '*\+$' ;then
-	echo "r8152" > ./etc/modules.d/usb-net-rtl8152
-else
-	echo "r8152" > ./etc/modules.d/usb-net-rtl8152
-fi
-echo "r8188eu" > ./etc/modules.d/rtl8188eu
-echo "sunxi_wdt" > ./etc/modules.d/watchdog
-
 adjust_docker_config
 adjust_openssl_config
 adjust_qbittorrent_config
@@ -170,61 +149,18 @@ adjust_nfs_config "mmcblk0p4"
 adjust_openssh_config
 adjust_openclash_config
 use_xrayplug_replace_v2rayplug
-
-# for collectd
-# [ -f ./etc/ppp/options-opkg ] && mv ./etc/ppp/options-opkg ./etc/ppp/options
-
-chmod 755 ./etc/init.d/*
-
-rm -f ./etc/rc.d/S80nginx 2>/dev/null
-
 create_fstab_config
 adjust_turboacc_config
 adjust_ntfs_config
 patch_admin_status_index_html
-
-if [ -f ${UBOOT_BIN} ];then
-    mkdir -p $TGT_ROOT/lib/u-boot && cp -v ${UBOOT_BIN} $TGT_ROOT/lib/u-boot
-    cp -v ${WRITE_UBOOT_SCRIPT} ${TGT_ROOT}/lib/u-boot
-    echo "写入 bootloader ..."
-    echo "dd if=${UBOOT_BIN} of=${TGT_DEV} bs=1024 seek=8"
-    dd if="${UBOOT_BIN}" of="${TGT_DEV}" bs=1024 seek=8
-    sync
-    echo "写入完毕"
-    echo
-fi
-
+adjust_kernel_env
+copy_uboot_to_fs
 write_release_info
 write_banner
-
-# First run, 第一次启动时自动创建新分区及格式化
-if [ -f "$FIRSTRUN_SCRIPT" ];then
-	chmod 755 "$FIRSTRUN_SCRIPT"
- 	cp "$FIRSTRUN_SCRIPT" ./usr/bin/ 
-	mv ./etc/rc.local ./etc/rc.local.orig
-	cat > ./etc/part_size <<EOF
-${SKIP_MB}	${BOOT_MB}	${ROOTFS_MB}
-EOF
-
-	cat > "./etc/rc.local" <<EOF
-# Put your custom commands here that should be executed once
-# the system init finished. By default this file does nothing.
-/usr/bin/mk_newpart.sh 1>/dev/null 2>&1
-exit 0
-EOF
-fi
-
-# 创建 /etc 初始快照
-echo "创建初始快照: /etc -> /.snapshots/etc-000"
-cd $TGT_ROOT && \
-mkdir -p .snapshots && \
-btrfs subvolume snapshot -r etc .snapshots/etc-000
-
-# clean temp_dir
-cd $TEMP_DIR
-umount -f $TGT_ROOT $TGT_BOOT
-( losetup -D && cd $WORK_DIR && rm -rf $TEMP_DIR && losetup -D)
-sync
+config_first_run
+create_snapshot "etc-000"
+write_uboot_to_disk
+clean_work_env
 mv $TGT_IMG $OUTPUT_DIR && sync
 echo "镜像已生成, 存放在 ${OUTPUT_DIR} 下面"
 echo "========================== end $0 ================================"
